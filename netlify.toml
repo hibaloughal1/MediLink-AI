@@ -1,0 +1,29 @@
+# Configuration de déploiement Netlify pour apps/web (Next.js 15, App
+# Router) au sein du monorepo npm workspaces MediLink AI. Prépare
+# uniquement le déploiement — n'ajoute et ne modifie aucun comportement de
+# l'application Next.js elle-même.
+#
+# `base = "."` (racine du monorepo, pas "apps/web") : nécessaire pour que
+# `npm install` résolve correctement les workspaces npm (un seul
+# package-lock.json à la racine) avant de construire uniquement apps/web.
+[build]
+  base = "."
+  command = "npm install && npm run build --workspace=apps/web"
+  publish = "apps/web/.next"
+
+[build.environment]
+  # Aligné sur "engines.node" du package.json racine (>=22.0.0).
+  NODE_VERSION = "22"
+  # NEXT_PUBLIC_API_URL n'est PAS défini ici volontairement : elle doit
+  # être configurée dans Netlify (Site settings > Environment variables),
+  # une fois l'URL publique de l'API (Render) connue. Next.js l'intègre au
+  # bundle client au moment du build — une modification de cette variable
+  # nécessite un nouveau build/déploiement, pas seulement un redémarrage.
+
+# Runtime Next.js officiel de Netlify : gère le SSR, les Server Components
+# et les routes dynamiques de l'App Router (ex. /doctors/[id]) sans
+# adaptation de code. Netlify l'installe automatiquement au build dès qu'il
+# est déclaré ici, même s'il n'est pas listé comme dépendance npm du
+# projet.
+[[plugins]]
+  package = "@netlify/plugin-nextjs"

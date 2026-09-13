@@ -1,0 +1,28 @@
+{
+  "name": "medilink-ai",
+  "private": true,
+  "version": "0.1.0",
+  "description": "MediLink AI - Plateforme intelligente d'accès et de gestion des soins (MVP)",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev --workspace=apps/api",
+    "dev:web": "npm run dev --workspace=apps/web",
+    "build:api": "npm run build --workspace=apps/api",
+    "build:web": "npm run build --workspace=apps/web",
+    "test:api": "npm run test --workspace=apps/api",
+    "test:web": "npm run test --workspace=apps/web",
+    "test:coverage:api": "npm run test:coverage --workspace=apps/api",
+    "test:coverage:web": "npm run test:coverage --workspace=apps/web",
+    "test:e2e": "npm run test:e2e --workspace=apps/web",
+    "lint": "npm run lint --workspace=apps/api && npm run lint --workspace=apps/web",
+    "prisma:generate": "npm run prisma:generate --workspace=apps/api",
+    "prisma:migrate": "npm run prisma:migrate --workspace=apps/api",
+    "prisma:seed": "npm run prisma:seed --workspace=apps/api"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

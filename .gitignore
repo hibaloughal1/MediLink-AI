@@ -1,0 +1,36 @@
+node_modules/
+.pnpm-store/
+
+# Next.js
+apps/web/.next/
+apps/web/out/
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# Playwright (apps/web/e2e)
+apps/web/test-results/
+apps/web/playwright-report/
+apps/web/blob-report/
+
+# Env files (never commit real secrets)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Prisma
+apps/api/prisma/dev.db
+
+# Logs
+npm-debug.log*
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# Coverage
+coverage/

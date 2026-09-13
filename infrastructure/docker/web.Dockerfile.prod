@@ -1,0 +1,40 @@
+# Image de PRODUCTION pour apps/web (étape 16) — `next build` puis `next
+# start`. Distincte de `web.Dockerfile` (développement, `next dev`, code
+# monté en volume) : celui-ci reste inchangé et continue de servir le
+# workflow de dev local. Aucun volume de source n'est prévu pour cette
+# image — le code est copié et construit une fois pour toutes au build.
+FROM node:22-alpine
+
+WORKDIR /workspace
+
+COPY package.json package-lock.json* ./
+COPY apps/web/package.json apps/web/package.json
+
+RUN npm install
+
+COPY apps/web apps/web
+
+WORKDIR /workspace/apps/web
+
+# `NEXT_PUBLIC_*` est intégré au bundle JavaScript CLIENT au moment du
+# build (Next.js), pas lu dynamiquement au démarrage : doit donc être
+# fourni via `--build-arg`, une variable d'environnement de conteneur
+# définie seulement à l'exécution n'aurait aucun effet sur le bundle déjà
+# construit.
+ARG NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+
+RUN npm run build
+
+ENV NODE_ENV=production
+
+# Utilisateur non-root fourni par l'image officielle node:*-alpine (uid
+# 1000).
+USER node
+
+EXPOSE 3000
+
+# Jamais `next dev` ici : uniquement le build de production ci-dessus,
+# servi par `next start` (voir le script "start" de apps/web/package.json,
+# qui respecte déjà WEB_PORT).
+CMD ["npm", "run", "start"]

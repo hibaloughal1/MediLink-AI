@@ -1,0 +1,270 @@
+// Schéma Prisma - MediLink AI
+// Étape 9 : module Availability (+ modèle Appointment minimal, sans API
+// associée). Voir docs/architecture/README.md pour la stratégie timezone
+// et l'algorithme de génération des créneaux.
+
+generator client {
+  provider      = "prisma-client-js"
+  // "native" pour le dev local (Windows/macOS/Linux), "linux-musl-openssl-3.0.x"
+  // pour l'image Docker node:20-alpine (Alpine récent = OpenSSL 3.x).
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  // `DATABASE_URL` : connexion utilisée à l'exécution par l'API (peut être
+  // une connexion "pooled", ex. PgBouncer côté Supabase). `directUrl` :
+  // connexion directe, utilisée uniquement par les commandes Prisma
+  // (`migrate deploy`, `migrate dev`, `db pull`, ...), jamais par le client
+  // à l'exécution — nécessaire car le moteur de migration de Prisma a
+  // besoin d'une connexion directe (prepared statements) que certains
+  // pooler en mode transaction ne supportent pas correctement. En
+  // développement local (pas de pooler), les deux variables pointent
+  // simplement vers la même base (voir .env.example) : aucun changement de
+  // comportement pour l'existant.
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  PATIENT
+  DOCTOR
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+// Identité, authentification, rôle et statut (cf. cahier des charges §12.1).
+// Les informations spécifiques au métier (profil patient détaillé, profil
+// professionnel du médecin, spécialités, etc.) seront ajoutées dans des
+// modèles séparés (Patient, Doctor) reliés 1-1 à User, aux étapes suivantes.
+model User {
+  id           String     @id @default(uuid())
+  email        String     @unique
+  passwordHash String
+  role         Role
+  status       UserStatus @default(ACTIVE)
+  firstName    String
+  lastName     String
+  phone        String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  refreshTokens         RefreshToken[]
+  doctor                Doctor?
+  appointmentsAsPatient Appointment[]  @relation("PatientAppointments")
+  notifications         Notification[]
+
+  @@index([role])
+}
+
+// Jetons de rafraîchissement (rotation à chaque utilisation). Seul le hash
+// du jeton est stocké : une fuite de la base ne permet pas de rejouer une
+// session. Ce n'est pas une entité listée dans le cahier des charges, mais
+// un détail d'implémentation nécessaire à une authentification JWT sécurisée
+// (access token courte durée + refresh token révocable).
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// Ville où exerce un médecin (annuaire, cf. cahier des charges §6.2/§6.7).
+// Table de référence dédiée plutôt qu'un champ texte libre, pour permettre
+// une recherche et une administration propres (RF-03, RF-11).
+model City {
+  id      String   @id @default(uuid())
+  name    String   @unique
+  doctors Doctor[]
+}
+
+// Spécialité médicale (annuaire, cf. cahier des charges §6.2/§6.7).
+model Specialty {
+  id                String            @id @default(uuid())
+  name              String            @unique
+  doctorSpecialties DoctorSpecialty[]
+}
+
+enum DoctorVerificationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+  SUSPENDED
+}
+
+// Profil professionnel du médecin, relié 1-1 à User. Un compte role=DOCTOR
+// n'est PAS automatiquement un médecin vérifié/réservable : c'est
+// `verificationStatus` qui en décide, contrôlé exclusivement par l'ADMIN
+// (cf. cahier des charges §9, règle 4 : "Un profil médecin doit être
+// validé avant d'être rendu réservable.").
+model Doctor {
+  id                 String                   @id @default(uuid())
+  userId             String                   @unique
+  user               User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  licenseNumber      String?
+  bio                String?
+  professionalPhone  String?
+  cityId             String?
+  city               City?                    @relation(fields: [cityId], references: [id])
+  address            String?
+  verificationStatus DoctorVerificationStatus @default(PENDING)
+  verifiedAt         DateTime?
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+
+  specialties    DoctorSpecialty[]
+  availabilities Availability[]
+  appointments   Appointment[]
+
+  @@index([verificationStatus])
+  @@index([cityId])
+}
+
+// Relation many-to-many Doctor <-> Specialty (un médecin peut avoir
+// plusieurs spécialités).
+model DoctorSpecialty {
+  doctorId    String
+  doctor      Doctor    @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  specialtyId String
+  specialty   Specialty @relation(fields: [specialtyId], references: [id], onDelete: Cascade)
+
+  @@id([doctorId, specialtyId])
+}
+
+enum AvailabilityType {
+  RECURRING
+  DATE_OVERRIDE
+}
+
+// Règle de disponibilité d'un médecin. Deux formes distinctes partagent
+// cette table (discriminant `type`) :
+//  - RECURRING : plage horaire hebdomadaire récurrente (dayOfWeek +
+//    startTime/endTime + slotDurationMinutes), active sur une fenêtre de
+//    dates [effectiveFrom, effectiveTo] (effectiveTo nul = sans fin).
+//  - DATE_OVERRIDE : bloque une journée entière (specificDate), quelles
+//    que soient les règles RECURRING ce jour-là. Pas de blocage partiel
+//    ni d'ajout exceptionnel de créneau au MVP.
+// `startTime`/`endTime` sont des heures d'horloge murale ("HH:mm"), SANS
+// fuseau horaire intrinsèque : elles signifient toujours "heure locale
+// Africa/Casablanca", quelle que soit l'évolution du décalage UTC (voir
+// docs/architecture/README.md, section Timezone).
+model Availability {
+  id       String           @id @default(uuid())
+  doctorId String
+  doctor   Doctor           @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  type     AvailabilityType
+
+  // --- Champs RECURRING uniquement (null si DATE_OVERRIDE) ---
+  dayOfWeek           Int?
+  startTime           String?
+  endTime             String?
+  slotDurationMinutes Int?
+  effectiveFrom       DateTime? @db.Date
+  effectiveTo         DateTime? @db.Date
+
+  // --- Champ DATE_OVERRIDE uniquement (null si RECURRING) ---
+  specificDate DateTime? @db.Date
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Postgres autorise plusieurs NULL dans un index unique : cette
+  // contrainte n'affecte donc que les lignes DATE_OVERRIDE (une seule
+  // règle de blocage par date et par médecin).
+  @@unique([doctorId, specificDate])
+  @@index([doctorId, dayOfWeek])
+  @@index([doctorId, isActive])
+}
+
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+}
+
+// Modèle minimal, introduit à l'étape 9 UNIQUEMENT pour permettre le
+// calcul de créneaux (retirer les rendez-vous déjà pris) et la protection
+// anti-double-réservation. Aucune route /api/appointments n'existe encore
+// (réservée à l'étape 10). Volontairement DÉCOUPLÉ d'Availability (aucune
+// FK vers une règle de disponibilité) : modifier, désactiver ou supprimer
+// une Availability ne peut donc jamais altérer un Appointment existant.
+// `status` par défaut PENDING dans le schéma (état "neutre" de l'enum,
+// cf. cahier des charges §6.4), mais le futur flux de réservation MVP
+// (étape 10) créera toujours les rendez-vous directement en CONFIRMED —
+// PENDING est conservé pour une évolution future (validation médecin,
+// paiement, etc.) sans nouvelle migration d'enum le jour venu.
+model Appointment {
+  id        String            @id @default(uuid())
+  doctorId  String
+  doctor    Doctor            @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  patientId String
+  patient   User              @relation("PatientAppointments", fields: [patientId], references: [id], onDelete: Cascade)
+  startAt   DateTime
+  endAt     DateTime
+  status    AppointmentStatus @default(PENDING)
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  notifications Notification[]
+
+  @@index([doctorId, startAt])
+  @@index([patientId])
+}
+
+// Étape 14 : notifications liées à un rendez-vous (réservation, annulation,
+// rappel). Chaque ligne représente UNE notification pour UN destinataire,
+// sur UN canal donné (IN_APP alimente la cloche de l'interface ; EMAIL
+// porte l'état d'un envoi best-effort). `appointmentId` est obligatoire :
+// à cette étape, toute notification concerne un rendez-vous — aucun autre
+// type d'événement n'existe dans ce MVP.
+enum NotificationType {
+  APPOINTMENT_BOOKED
+  APPOINTMENT_CANCELLED
+  APPOINTMENT_REMINDER
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+// La contrainte unique ci-dessous est le mécanisme d'idempotence RÉEL
+// (garanti par PostgreSQL, pas seulement par la logique applicative) :
+// au plus une notification par (destinataire, rendez-vous, type, canal),
+// y compris sous appels concurrents ou relances du scheduler de rappel.
+model Notification {
+  id            String              @id @default(uuid())
+  userId        String
+  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  appointmentId String
+  appointment   Appointment         @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  type          NotificationType
+  channel       NotificationChannel
+  status        NotificationStatus  @default(PENDING)
+  errorMessage  String?
+  readAt        DateTime?
+  sentAt        DateTime?
+  createdAt     DateTime            @default(now())
+
+  @@unique([userId, appointmentId, type, channel])
+  @@index([userId, readAt])
+  @@index([status])
+}
