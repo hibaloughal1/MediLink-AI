@@ -1,7 +1,6 @@
 # MediLink AI — MVP
 
 Plateforme intelligente d'accès et de gestion des soins adaptée au Maroc.
-Voir `Cahier_des_charges_MediLink_AI_MVP.pdf` pour le cadrage complet.
 
 > **Statut actuel : Étape 16 — MVP techniquement finalisé.**
 > Auth/Users (étape 7), Doctors/Specialties/Cities (étape 8), Availability
